@@ -1,0 +1,495 @@
+// FSM Platform — Prisma Schema
+// Self-hosted PostgreSQL. Single-tenant per deployment.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole { ADMIN DISPATCHER TECHNICIAN }
+enum CustomerType { RESIDENTIAL COMMERCIAL INDUSTRIAL }
+enum JobStatus { ESTIMATE SCHEDULED IN_PROGRESS ON_HOLD COMPLETED INVOICED CANCELLED }
+enum JobPriority { LOW NORMAL HIGH URGENT }
+enum LineItemType { LABOR PART SERVICE FEE DISCOUNT }
+enum PricingType { FLAT_RATE HOURLY PER_UNIT }
+enum PriceTier { RESIDENTIAL COMMERCIAL BOTH }
+enum InvoiceStatus { DRAFT SENT PAID PARTIAL OVERDUE VOID }
+enum FieldType { TEXT TEXTAREA NUMBER BOOLEAN SELECT MULTI_SELECT DATE URL }
+enum TradeType { HVAC PLUMBING ELECTRICAL LANDSCAPING GENERAL CUSTOM }
+enum ItemCondition { EXCELLENT GOOD FAIR NEEDS_SERVICE OUT_OF_SERVICE }
+enum TimeCardStatus { ACTIVE COMPLETED APPROVED REJECTED }
+enum AttachmentType { PHOTO DOCUMENT PERMIT WARRANTY OTHER }
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String
+  phone         String?
+  passwordHash  String
+  role          UserRole  @default(TECHNICIAN)
+  avatarUrl     String?
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  sessions         Session[]
+  jobAssignments   JobAssignment[]
+  timecards        TimeCard[]
+  timecardsApproved TimeCard[] @relation("ApprovedBy")
+  toolAssignments  ToolAssignment[]
+  inventoryTransactions InventoryTransaction[]
+  jobNotes         JobNote[]
+  propertyNotes    PropertyNote[]
+  customerNotes    CustomerNote[]
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@map("sessions")
+}
+
+model Customer {
+  id             String       @id @default(cuid())
+  name           String
+  type           CustomerType @default(RESIDENTIAL)
+  company        String?
+  email          String?
+  phone          String?
+  billingAddress String?
+  taxExempt      Boolean      @default(false)
+  taxId          String?
+  tags           String[]     @default([])
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  contacts   CustomerContact[]
+  properties Property[]
+  notes      CustomerNote[]
+  @@index([name])
+  @@index([email])
+  @@map("customers")
+}
+
+model CustomerContact {
+  id         String   @id @default(cuid())
+  customerId String
+  name       String
+  role       String?
+  email      String?
+  phone      String?
+  isPrimary  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  @@map("customer_contacts")
+}
+
+model CustomerNote {
+  id         String   @id @default(cuid())
+  customerId String
+  userId     String
+  content    String
+  createdAt  DateTime @default(now())
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id])
+  @@map("customer_notes")
+}
+
+model Property {
+  id                 String   @id @default(cuid())
+  customerId         String
+  name               String?
+  address            String
+  city               String
+  state              String
+  zip                String
+  country            String   @default("US")
+  lat                Float?
+  lng                Float?
+  accessInstructions String?
+  gateCode           String?
+  keyLocation        String?
+  specialWarnings    String?
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  customer    Customer            @relation(fields: [customerId], references: [id])
+  jobs        Job[]
+  equipment   PropertyEquipment[]
+  notes       PropertyNote[]
+  attachments Attachment[]
+  @@index([customerId])
+  @@map("properties")
+}
+
+model PropertyNote {
+  id         String   @id @default(cuid())
+  propertyId String
+  userId     String
+  content    String
+  createdAt  DateTime @default(now())
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id])
+  @@map("property_notes")
+}
+
+model PropertyEquipment {
+  id             String    @id @default(cuid())
+  propertyId     String
+  itemId         String?
+  name           String
+  brand          String?
+  modelNumber    String?
+  serialNumber   String?
+  installDate    DateTime?
+  warrantyExpiry DateTime?
+  notes          String?
+  attributes     Json      @default("{}")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  item     Item?    @relation(fields: [itemId], references: [id])
+  @@index([propertyId])
+  @@map("property_equipment")
+}
+
+model Job {
+  id               String      @id @default(cuid())
+  jobNumber        String      @unique
+  propertyId       String
+  status           JobStatus   @default(SCHEDULED)
+  priority         JobPriority @default(NORMAL)
+  title            String
+  description      String?
+  jobType          String?
+  scheduledDate    DateTime?
+  scheduledStart   DateTime?
+  scheduledEnd     DateTime?
+  estimatedMinutes Int?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  completionNotes  String?
+  customerSignature String?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  property      Property         @relation(fields: [propertyId], references: [id])
+  assignments   JobAssignment[]
+  lineItems     JobLineItem[]
+  requiredItems JobRequiredItem[]
+  notes         JobNote[]
+  attachments   Attachment[]
+  timecards     TimeCard[]
+  invoice       Invoice?
+  statusHistory JobStatusHistory[]
+  @@index([propertyId])
+  @@index([status])
+  @@index([scheduledDate])
+  @@index([jobNumber])
+  @@map("jobs")
+}
+
+model JobAssignment {
+  id         String   @id @default(cuid())
+  jobId      String
+  userId     String
+  role       String?
+  assignedAt DateTime @default(now())
+  job  Job  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id])
+  @@unique([jobId, userId])
+  @@map("job_assignments")
+}
+
+model JobStatusHistory {
+  id        String    @id @default(cuid())
+  jobId     String
+  status    JobStatus
+  note      String?
+  changedAt DateTime  @default(now())
+  changedBy String?
+  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  @@map("job_status_history")
+}
+
+model JobNote {
+  id         String   @id @default(cuid())
+  jobId      String
+  userId     String
+  content    String
+  isInternal Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  job  Job  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id])
+  @@map("job_notes")
+}
+
+model JobRequiredItem {
+  id          String    @id @default(cuid())
+  jobId       String
+  itemId      String?
+  description String
+  quantity    Decimal   @default(1)
+  isConfirmed Boolean   @default(false)
+  confirmedAt DateTime?
+  notes       String?
+  job  Job   @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  item Item? @relation(fields: [itemId], references: [id])
+  @@map("job_required_items")
+}
+
+model JobLineItem {
+  id              String       @id @default(cuid())
+  jobId           String
+  pricebookItemId String?
+  itemId          String?
+  type            LineItemType
+  description     String
+  quantity        Decimal      @default(1)
+  unitPrice       Decimal
+  unitCost        Decimal?
+  taxable         Boolean      @default(true)
+  sortOrder       Int          @default(0)
+  job           Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  pricebookItem PricebookItem? @relation(fields: [pricebookItemId], references: [id])
+  item          Item?          @relation(fields: [itemId], references: [id])
+  @@map("job_line_items")
+}
+
+model TimeCard {
+  id           String         @id @default(cuid())
+  userId       String
+  jobId        String?
+  clockIn      DateTime
+  clockOut     DateTime?
+  breakMinutes Int            @default(0)
+  notes        String?
+  status       TimeCardStatus @default(ACTIVE)
+  approvedById String?
+  approvedAt   DateTime?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  user       User  @relation(fields: [userId], references: [id])
+  job        Job?  @relation(fields: [jobId], references: [id])
+  approvedBy User? @relation("ApprovedBy", fields: [approvedById], references: [id])
+  @@index([userId])
+  @@index([jobId])
+  @@index([clockIn])
+  @@map("timecards")
+}
+
+model ItemCategory {
+  id              String    @id @default(cuid())
+  name            String
+  slug            String    @unique
+  description     String?
+  icon            String?
+  tradeType       TradeType @default(GENERAL)
+  isConsumable    Boolean   @default(true)
+  sortOrder       Int       @default(0)
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  typeDefinitions ItemTypeDefinition[]
+  items           Item[]
+  @@map("item_categories")
+}
+
+model ItemTypeDefinition {
+  id          String   @id @default(cuid())
+  categoryId  String
+  name        String
+  slug        String
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  category ItemCategory   @relation(fields: [categoryId], references: [id])
+  fields   ItemTypeField[]
+  items    Item[]
+  @@unique([categoryId, slug])
+  @@map("item_type_definitions")
+}
+
+model ItemTypeField {
+  id               String    @id @default(cuid())
+  typeDefinitionId String
+  fieldKey         String
+  label            String
+  fieldType        FieldType
+  options          Json?
+  unit             String?
+  isRequired       Boolean   @default(false)
+  isFilterable     Boolean   @default(false)
+  showInTable      Boolean   @default(false)
+  placeholder      String?
+  helpText         String?
+  sortOrder        Int       @default(0)
+  createdAt        DateTime  @default(now())
+  typeDefinition ItemTypeDefinition @relation(fields: [typeDefinitionId], references: [id], onDelete: Cascade)
+  @@unique([typeDefinitionId, fieldKey])
+  @@map("item_type_fields")
+}
+
+model Item {
+  id               String        @id @default(cuid())
+  categoryId       String
+  typeDefinitionId String?
+  name             String
+  brand            String?
+  modelNumber      String?
+  serialNumber     String?
+  sku              String?
+  description      String?
+  attributes       Json          @default("{}")
+  quantityOnHand   Decimal?      @default(0)
+  reorderThreshold Decimal?
+  reorderQuantity  Decimal?
+  location         String?
+  unitCost         Decimal?
+  unitOfMeasure    String?
+  isTool           Boolean       @default(false)
+  condition        ItemCondition?
+  purchaseDate     DateTime?
+  lastServiceDate  DateTime?
+  nextServiceDate  DateTime?
+  assignedToUserId String?
+  isActive         Boolean       @default(true)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  category         ItemCategory        @relation(fields: [categoryId], references: [id])
+  typeDefinition   ItemTypeDefinition? @relation(fields: [typeDefinitionId], references: [id])
+  assignedTo       User?               @relation(fields: [assignedToUserId], references: [id])
+  transactions     InventoryTransaction[]
+  toolAssignments  ToolAssignment[]
+  jobRequiredItems JobRequiredItem[]
+  jobLineItems     JobLineItem[]
+  propertyEquipment PropertyEquipment[]
+  pricebookItems   PricebookItem[]
+  @@index([categoryId])
+  @@index([brand])
+  @@index([modelNumber])
+  @@index([serialNumber])
+  @@index([sku])
+  @@index([isTool])
+  @@map("items")
+}
+
+model InventoryTransaction {
+  id        String   @id @default(cuid())
+  itemId    String
+  userId    String
+  jobId     String?
+  quantity  Decimal
+  reason    String?
+  notes     String?
+  createdAt DateTime @default(now())
+  item Item @relation(fields: [itemId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+  @@index([itemId])
+  @@index([jobId])
+  @@map("inventory_transactions")
+}
+
+model ToolAssignment {
+  id               String         @id @default(cuid())
+  itemId           String
+  assignedToUserId String
+  jobId            String?
+  assignedAt       DateTime       @default(now())
+  returnedAt       DateTime?
+  conditionOnReturn ItemCondition?
+  notes            String?
+  item       Item @relation(fields: [itemId], references: [id])
+  assignedTo User @relation(fields: [assignedToUserId], references: [id])
+  @@map("tool_assignments")
+}
+
+model PricebookCategory {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  items PricebookItem[]
+  @@map("pricebook_categories")
+}
+
+model PricebookItem {
+  id          String      @id @default(cuid())
+  categoryId  String
+  itemId      String?
+  name        String
+  description String?
+  pricingType PricingType @default(FLAT_RATE)
+  unitPrice   Decimal
+  unitCost    Decimal?
+  tier        PriceTier   @default(BOTH)
+  isActive    Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  category     PricebookCategory @relation(fields: [categoryId], references: [id])
+  item         Item?             @relation(fields: [itemId], references: [id])
+  jobLineItems JobLineItem[]
+  @@map("pricebook_items")
+}
+
+model Invoice {
+  id            String        @id @default(cuid())
+  invoiceNumber String        @unique
+  jobId         String        @unique
+  status        InvoiceStatus @default(DRAFT)
+  subtotal      Decimal
+  taxRate       Decimal       @default(0)
+  taxAmount     Decimal       @default(0)
+  total         Decimal
+  dueDate       DateTime?
+  paidAt        DateTime?
+  notes         String?
+  terms         String?
+  pdfUrl        String?
+  sentAt        DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  job       Job            @relation(fields: [jobId], references: [id])
+  lineItems InvoiceLineItem[]
+  @@map("invoices")
+}
+
+model InvoiceLineItem {
+  id          String       @id @default(cuid())
+  invoiceId   String
+  type        LineItemType
+  description String
+  quantity    Decimal      @default(1)
+  unitPrice   Decimal
+  taxable     Boolean      @default(true)
+  sortOrder   Int          @default(0)
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  @@map("invoice_line_items")
+}
+
+model Attachment {
+  id         String         @id @default(cuid())
+  jobId      String?
+  propertyId String?
+  type       AttachmentType @default(PHOTO)
+  url        String
+  filename   String
+  mimeType   String?
+  sizeBytes  Int?
+  caption    String?
+  uploadedBy String?
+  createdAt  DateTime       @default(now())
+  job      Job?      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  property Property? @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  @@map("attachments")
+}
